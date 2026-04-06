@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Data and model artifacts
+mlruns/
+model/*.pkl
+model/*.joblib
+model/*.json
+
+# OS / Editor
+.DS_Store
+.vscode/
