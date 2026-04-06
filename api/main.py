@@ -43,10 +43,7 @@ def load_artifacts() -> None:
 
 @app.get("/")
 def health_check() -> dict:
-    return {
-        "status": "ok",
-        "message": "Mental Health Risk Prediction API is running",
-    }
+    return {"message": "Mental Health API running"}
 
 
 @app.post("/predict")
