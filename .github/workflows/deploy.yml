@@ -25,6 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Vendor runtime dependencies for Azure
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --target ".python_packages/lib/site-packages" -r requirements.txt
+
       - name: Basic syntax check
         run: |
           python -m py_compile src/preprocess.py src/train.py api/main.py
@@ -63,6 +68,7 @@ jobs:
             api/
             src/
             model/
+            .python_packages/
             requirements.txt
             Dockerfile
             README.md
