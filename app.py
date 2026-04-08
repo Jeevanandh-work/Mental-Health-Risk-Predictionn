@@ -1,12 +1,4 @@
-from fastapi import FastAPI
+from api.main import app
 
-app = FastAPI()
-
-
-@app.get("/")
-def home():
-    return {"message": "API is running successfully"}
-
-
-# IMPORTANT for Azure
+# IMPORTANT for Azure / gunicorn
 application = app
