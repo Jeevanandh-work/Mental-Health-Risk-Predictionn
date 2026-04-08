@@ -60,18 +60,14 @@ jobs:
           test -f model/metrics.json
 
       - name: Archive project package
+        run: |
+          zip -r app-package.zip app.py api src model .python_packages requirements.txt Dockerfile README.md runtime.txt
+
+      - name: Upload project package
         uses: actions/upload-artifact@v4
         with:
           name: app-package
-          path: |
-            app.py
-            api/
-            src/
-            model/
-            .python_packages/
-            requirements.txt
-            Dockerfile
-            README.md
+          path: app-package.zip
 
   deploy-to-azure:
     runs-on: ubuntu-latest
@@ -92,4 +88,6 @@ jobs:
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: .
+          package: app-package.zip
+          clean: true
+          restart: true
