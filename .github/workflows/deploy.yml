@@ -59,6 +59,7 @@ jobs:
         with:
           name: app-package
           path: |
+            app.py
             api/
             src/
             model/

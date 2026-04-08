@@ -78,6 +78,10 @@ API endpoints:
 - `GET /` health check
 - `POST /predict` inference
 
+Browser UI:
+- `GET /ui` opens the interactive prediction dashboard
+- `GET /` also serves the UI when opened in a browser, while still returning the JSON health message for API clients
+
 ## 6. Sample Prediction Request
 
 ### JSON Input

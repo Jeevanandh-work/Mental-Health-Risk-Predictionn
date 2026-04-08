@@ -1,15 +1,12 @@
-from __future__ import annotations
+from fastapi import FastAPI
 
-import os
-
-import uvicorn
-
-from api.main import app as application
-
-# Keep both names so Azure/Gunicorn and local tooling can detect the app.
-app = application
+app = FastAPI()
 
 
-if __name__ == "__main__":
-	port = int(os.getenv("PORT", "8000"))
-	uvicorn.run("api.main:app", host="0.0.0.0", port=port)
+@app.get("/")
+def home():
+    return {"message": "API is running successfully"}
+
+
+# IMPORTANT for Azure
+application = app
