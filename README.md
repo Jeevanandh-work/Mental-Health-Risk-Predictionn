@@ -45,6 +45,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Note: the Docker image and local runtime should use `scikit-learn==1.7.1` to match the saved model artifacts and avoid version-mismatch warnings during unpickling.
+
 ## 4. Train the Model
 
 ```bash
