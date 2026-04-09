@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,21 @@ from pydantic import BaseModel, Field
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = PROJECT_ROOT / "model" / "model.pkl"
 ENCODER_PATH = PROJECT_ROOT / "model" / "label_encoder.pkl"
-DB_PATH = PROJECT_ROOT / "data" / "predictions.db"
+
+
+def resolve_db_path() -> Path:
+  # Azure App Service often mounts app code as read-only, so default to /home/data there.
+  explicit = os.getenv("PREDICTIONS_DB_PATH")
+  if explicit:
+    return Path(explicit)
+
+  if os.getenv("WEBSITE_INSTANCE_ID"):
+    return Path("/home/data/predictions.db")
+
+  return PROJECT_ROOT / "data" / "predictions.db"
+
+
+DB_PATH = resolve_db_path()
 
 FEATURE_COLUMNS = [
     "sleep_hours",
@@ -209,6 +224,15 @@ def save_prediction(payload: RiskInput, risk_score: float, risk_level: str, expl
         conn.commit()
 
 
+def safe_save_prediction(payload: RiskInput, risk_score: float, risk_level: str, explanation: str, recommendations: list[str]) -> str:
+    try:
+        save_prediction(payload, risk_score, risk_level, explanation, recommendations)
+        return "saved"
+    except Exception:
+        # Prediction should still succeed even if persistence fails.
+        return "save_failed"
+
+
 @app.on_event("startup")
 def load_artifacts() -> None:
     global model, label_encoder
@@ -264,7 +288,7 @@ def predict(payload: RiskInput) -> dict[str, Any]:
         recommendations = build_recommendations(payload, predicted_label)
         feature_importance = get_feature_importance()
 
-        save_prediction(payload, risk_score, predicted_label, explanation, recommendations)
+        persistence_status = safe_save_prediction(payload, risk_score, predicted_label, explanation, recommendations)
 
         return {
             "risk_score": round(risk_score, 1),
@@ -274,6 +298,7 @@ def predict(payload: RiskInput) -> dict[str, Any]:
             "recommendations": recommendations,
             "probabilities": {k: round(v, 4) for k, v in probabilities.items()},
             "feature_importance": feature_importance,
+            "persistence_status": persistence_status,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Prediction error: {exc}") from exc
@@ -281,18 +306,21 @@ def predict(payload: RiskInput) -> dict[str, Any]:
 
 @app.get("/history")
 def get_history(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
-    with get_db_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, created_at, sleep_hours, stress_level, work_hours,
-                   social_activity, physical_activity, screen_time,
-                   risk_score, risk_level, explanation, recommendations_json
-            FROM predictions
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    try:
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, sleep_hours, stress_level, work_hours,
+                       social_activity, physical_activity, screen_time,
+                       risk_score, risk_level, explanation, recommendations_json
+                FROM predictions
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except Exception:
+        return {"count": 0, "items": [], "status": "db_unavailable"}
 
     history = []
     for row in rows:
@@ -315,23 +343,31 @@ def get_history(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
             }
         )
 
-    return {"count": len(history), "items": history}
+    return {"count": len(history), "items": history, "status": "ok"}
 
 
 @app.get("/history/stats")
 def get_history_stats() -> dict[str, Any]:
-    with get_db_connection() as conn:
-        total = conn.execute("SELECT COUNT(*) as c FROM predictions").fetchone()["c"]
-        avg_score_row = conn.execute("SELECT AVG(risk_score) as avg_score FROM predictions").fetchone()
-        avg_score = float(avg_score_row["avg_score"]) if avg_score_row["avg_score"] is not None else 0.0
+    try:
+        with get_db_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) as c FROM predictions").fetchone()["c"]
+            avg_score_row = conn.execute("SELECT AVG(risk_score) as avg_score FROM predictions").fetchone()
+            avg_score = float(avg_score_row["avg_score"]) if avg_score_row["avg_score"] is not None else 0.0
 
-        level_rows = conn.execute(
-            """
-            SELECT risk_level, COUNT(*) as count
-            FROM predictions
-            GROUP BY risk_level
-            """
-        ).fetchall()
+            level_rows = conn.execute(
+                """
+                SELECT risk_level, COUNT(*) as count
+                FROM predictions
+                GROUP BY risk_level
+                """
+            ).fetchall()
+    except Exception:
+        return {
+            "total_predictions": 0,
+            "average_risk_score": 0.0,
+            "level_breakdown": {"Low": 0, "Medium": 0, "High": 0},
+            "status": "db_unavailable",
+        }
 
     level_breakdown = {"Low": 0, "Medium": 0, "High": 0}
     for row in level_rows:
@@ -341,6 +377,7 @@ def get_history_stats() -> dict[str, Any]:
         "total_predictions": int(total),
         "average_risk_score": round(avg_score, 2),
         "level_breakdown": level_breakdown,
+        "status": "ok",
     }
 
 
@@ -747,7 +784,10 @@ UI_HTML = """
         const rows = document.getElementById('historyRows');
 
         if (!data.items || data.items.length === 0) {
-          rows.innerHTML = '<tr><td colspan="5" class="muted">No history yet.</td></tr>';
+          const msg = data.status === 'db_unavailable'
+            ? 'History database unavailable in current environment.'
+            : 'No history yet.';
+          rows.innerHTML = `<tr><td colspan="5" class="muted">${msg}</td></tr>`;
           drawTrend([]);
           return;
         }
@@ -772,6 +812,7 @@ UI_HTML = """
     async function predictRisk() {
       const payload = getPayload();
       drawInputRadar(payload);
+      document.getElementById('explanation').textContent = 'Predicting...';
 
       try {
         const response = await fetch('/predict', {
@@ -790,7 +831,10 @@ UI_HTML = """
         document.getElementById('riskBadge').textContent = `${data.risk_level} Risk`;
         document.getElementById('riskScoreText').textContent = `Risk Score: ${data.risk_score}%`;
         document.getElementById('riskMeterFill').style.width = `${data.risk_score}%`;
-        document.getElementById('explanation').textContent = data.explanation;
+        const persistenceNote = data.persistence_status === 'save_failed'
+          ? ' (Prediction shown, but history could not be saved.)'
+          : '';
+        document.getElementById('explanation').textContent = `${data.explanation}${persistenceNote}`;
 
         const factors = document.getElementById('factors');
         factors.innerHTML = (data.key_factors || []).map(f =>
