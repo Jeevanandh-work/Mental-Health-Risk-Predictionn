@@ -75,12 +75,19 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 API endpoints:
-- `GET /` health check
-- `POST /predict` inference
+- `GET /` interactive dashboard UI
+- `GET /health` API and model health status
+- `POST /predict` enhanced inference
+- `GET /history` recent prediction history (SQLite)
+- `GET /history/stats` summary analytics
 
-Browser UI:
-- `GET /ui` opens the interactive prediction dashboard
-- `GET /` also serves the UI when opened in a browser, while still returning the JSON health message for API clients
+Dashboard features:
+- Professional responsive UI with result cards and risk meter
+- Color-coded levels (`Low` green, `Medium` yellow, `High` red)
+- Explanation and key influencing factors
+- Personalized recommendations
+- Input radar chart and feature-importance chart (Chart.js)
+- Local history + trend chart from SQLite tracking
 
 ## 6. Sample Prediction Request
 
@@ -116,9 +123,43 @@ Expected response:
 
 ```json
 {
-  "risk_level": "Medium"
+  "risk_score": 78.4,
+  "risk_level": "High",
+  "explanation": "Predicted High risk with score 78.4%. Main signals come from lifestyle patterns such as stress, sleep, activity, and screen exposure.",
+  "key_factors": [
+    {
+      "factor": "stress_level",
+      "impact": "high",
+      "reason": "Stress is very high."
+    }
+  ],
+  "recommendations": [
+    "Improve sleep consistency: target 7-9 hours with fixed bed/wake times."
+  ],
+  "probabilities": {
+    "Low": 0.05,
+    "Medium": 0.31,
+    "High": 0.64
+  },
+  "feature_importance": [
+    {
+      "feature": "stress_level",
+      "importance": 0.2891
+    }
+  ]
 }
 ```
+
+## 6. Prediction History Storage
+
+Predictions are stored in SQLite automatically at:
+
+`data/predictions.db`
+
+This enables:
+- session-level tracking
+- history table visualization in the dashboard
+- risk score trend chart
 
 ## 7. MLflow Tracking
 
