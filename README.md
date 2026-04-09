@@ -184,8 +184,15 @@ docker build -t mental-health-api .
 Run container:
 
 ```bash
-docker run -p 8000:8000 mental-health-api
+docker run -p 8000:8000 -v "${PWD}/data:/app/data" mental-health-api
 ```
+
+Then open:
+- `http://127.0.0.1:8000/` for the dashboard UI with charts and recommendations
+- `http://127.0.0.1:8000/docs` for API docs
+- `http://127.0.0.1:8000/history` for prediction history JSON
+
+The dashboard includes the risk meter, recommendation cards, and Chart.js visualizations directly inside the Docker container.
 
 ## 9. Azure App Service Compatibility
 
