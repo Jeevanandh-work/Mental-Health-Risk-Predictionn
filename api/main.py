@@ -61,6 +61,7 @@ class RiskInput(BaseModel):
 
 model: Any = None
 label_encoder: Any = None
+last_model_error: str | None = None
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -122,6 +123,86 @@ def get_feature_importance() -> list[dict[str, Any]]:
 
     rows.sort(key=lambda x: x["importance"], reverse=True)
     return rows
+
+
+def get_default_feature_importance() -> list[dict[str, Any]]:
+    # Domain-prior weights used when model-level importances are unavailable.
+    return [
+        {"feature": "stress_level", "importance": 0.28},
+        {"feature": "sleep_hours", "importance": 0.24},
+        {"feature": "screen_time", "importance": 0.15},
+        {"feature": "physical_activity", "importance": 0.13},
+        {"feature": "social_activity", "importance": 0.11},
+        {"feature": "work_hours", "importance": 0.09},
+    ]
+
+
+def fallback_predict(payload: RiskInput) -> tuple[str, dict[str, float], float]:
+    stress = float(payload.stress_level)
+    sleep = float(payload.sleep_hours)
+    work = float(payload.work_hours)
+    social = float(payload.social_activity)
+    physical = float(payload.physical_activity)
+    screen = float(payload.screen_time)
+
+    risk_points = (
+        (2 if stress >= 8 else 1 if stress >= 6 else 0)
+        + (2 if sleep < 5 else 1 if sleep < 6 else 0)
+        + (1 if work > 10 else 0)
+        + (1 if screen > 7 else 0)
+        + (1 if social < 4 else 0)
+        + (1 if physical < 4 else 0)
+    )
+
+    protective_points = (
+        (1 if 7 <= sleep <= 9 else 0)
+        + (1 if stress <= 4 else 0)
+        + (1 if work <= 8 else 0)
+        + (1 if screen <= 5 else 0)
+        + (1 if social >= 6 else 0)
+        + (1 if physical >= 6 else 0)
+    )
+
+    if (stress > 7 and sleep < 5.5) or risk_points >= 5:
+        risk_level = "High"
+        probabilities = {"Low": 0.05, "Medium": 0.18, "High": 0.77}
+    elif protective_points >= 4 and risk_points <= 1:
+        risk_level = "Low"
+        probabilities = {"Low": 0.78, "Medium": 0.18, "High": 0.04}
+    else:
+        risk_level = "Medium"
+        probabilities = {"Low": 0.16, "Medium": 0.70, "High": 0.14}
+
+    return risk_level, probabilities, compute_risk_score(probabilities)
+
+
+def model_predict(payload: RiskInput) -> tuple[str, dict[str, float], float, str]:
+    global last_model_error
+
+    if model is None or label_encoder is None:
+        risk_level, probabilities, risk_score = fallback_predict(payload)
+        return risk_level, probabilities, risk_score, "rule_based"
+
+    input_df = pd.DataFrame([payload.model_dump()])
+
+    try:
+        prediction_encoded = model.predict(input_df)
+        predicted_label = str(label_encoder.inverse_transform(prediction_encoded)[0])
+
+        probabilities: dict[str, float] = {}
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(input_df)[0]
+            classes = list(label_encoder.classes_)
+            probabilities = {str(cls): float(prob) for cls, prob in zip(classes, proba)}
+
+        risk_score = compute_risk_score(probabilities) if probabilities else float(SCORE_WEIGHTS.get(predicted_label, 50))
+        last_model_error = None
+        return predicted_label, probabilities, risk_score, "model"
+    except Exception as exc:
+        # Handle sklearn pickle version mismatches gracefully.
+        last_model_error = str(exc)
+        risk_level, probabilities, risk_score = fallback_predict(payload)
+        return risk_level, probabilities, risk_score, "rule_based"
 
 
 def build_explanation(payload: RiskInput, risk_level: str, risk_score: float) -> tuple[str, list[dict[str, str]]]:
@@ -259,34 +340,20 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "model_loaded": loaded,
         "db_path": str(DB_PATH),
+        "last_model_error": last_model_error,
     }
 
 
 @app.post("/predict")
 def predict(payload: RiskInput) -> dict[str, Any]:
-    if model is None or label_encoder is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model artifacts not found. Train the model first using src/train.py.",
-        )
-
-    input_df = pd.DataFrame([payload.model_dump()])
-
     try:
-        prediction_encoded = model.predict(input_df)
-        predicted_label = str(label_encoder.inverse_transform(prediction_encoded)[0])
-
-        probabilities: dict[str, float] = {}
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(input_df)[0]
-            classes = list(label_encoder.classes_)
-            probabilities = {str(cls): float(prob) for cls, prob in zip(classes, proba)}
-
-        risk_score = compute_risk_score(probabilities) if probabilities else float(SCORE_WEIGHTS.get(predicted_label, 50))
+        predicted_label, probabilities, risk_score, prediction_mode = model_predict(payload)
 
         explanation, key_factors = build_explanation(payload, predicted_label, risk_score)
         recommendations = build_recommendations(payload, predicted_label)
         feature_importance = get_feature_importance()
+        if not feature_importance:
+            feature_importance = get_default_feature_importance()
 
         persistence_status = safe_save_prediction(payload, risk_score, predicted_label, explanation, recommendations)
 
@@ -299,6 +366,7 @@ def predict(payload: RiskInput) -> dict[str, Any]:
             "probabilities": {k: round(v, 4) for k, v in probabilities.items()},
             "feature_importance": feature_importance,
             "persistence_status": persistence_status,
+            "prediction_mode": prediction_mode,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Prediction error: {exc}") from exc
